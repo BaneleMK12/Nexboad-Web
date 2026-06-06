@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
 import * as CK from "@/engines/checkers";
 import { useStats } from "@/hooks/useStats";
+import { useResponsiveCanvas } from "@/hooks/useCanvas";
 
 type Mode = "menu"|"color"|"playing";
 const DEPTHS = [3,5,7];
@@ -19,36 +20,35 @@ export default function Checkers() {
   const [thinking, setThinking] = useState(false);
   const [resultRecorded, setResultRecorded] = useState(false);
   const [showResult, setShowResult] = useState(false);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const aiPending = useRef(false);
 
-  const cellSize = () => { const c=canvasRef.current; return c?Math.floor(Math.min(c.width,c.height)/8):50; };
-  const sqForXY = (x:number,y:number,flipped:boolean) => {
-    const cs=cellSize(); const col=Math.floor(x/cs); const row=Math.floor(y/cs);
-    if(col<0||col>7||row<0||row>7) return -1;
-    return flipped?(7-row)*8+(7-col):row*8+col;
-  };
+  const modeRef = useRef(mode); const gsRef = useRef(gs);
+  const selRef = useRef(selected); const lfRef = useRef(legalFrom);
+  const vsAIRef = useRef(vsAI); const pcRef = useRef(playerColor);
+  modeRef.current=mode; gsRef.current=gs; selRef.current=selected;
+  lfRef.current=legalFrom; vsAIRef.current=vsAI; pcRef.current=playerColor;
 
-  const draw = useCallback((state:CK.CkState, sel:number|null, lm:CK.CkMove[]) => {
-    const canvas=canvasRef.current; if(!canvas) return;
-    const ctx=canvas.getContext("2d")!; const cs=cellSize();
-    const flipped=vsAI&&playerColor==="b";
-    const validTos=new Set(lm.map(m=>m.path[m.path.length-1]));
+  const drawFn = useCallback((canvas: HTMLCanvasElement) => {
+    if (modeRef.current !== "playing") return;
+    const state = gsRef.current; const sel = selRef.current; const lm = lfRef.current;
+    const ctx = canvas.getContext("2d")!;
+    const cs = Math.floor(Math.min(canvas.width, canvas.height) / 8);
+    const flipped = vsAIRef.current && pcRef.current === "b";
+    const validTos = new Set(lm.map(m=>m.path[m.path.length-1]));
     ctx.clearRect(0,0,canvas.width,canvas.height);
-    for(let r=0;r<8;r++) for(let f=0;f<8;f++){
-      const sq=flipped?(7-r)*8+(7-f):r*8+f;
-      const dark=(r+f)%2===1;
-      let bg=dark?"#2d2d2d":"#4a4a4a";
-      if(sq===state.lastFrom||sq===state.lastTo) bg=dark?"#4a4a20":"#6a6a30";
+    for (let r=0;r<8;r++) for (let f=0;f<8;f++) {
+      const sq = flipped?(7-r)*8+(7-f):r*8+f;
+      const dark = (r+f)%2===1;
+      let bg = dark?"#2d2d2d":"#4a4a4a";
+      if (sq===state.lastFrom||sq===state.lastTo) bg = dark?"#4a4a20":"#6a6a30";
       ctx.fillStyle=bg; ctx.fillRect(f*cs,r*cs,cs,cs);
-      if(sel===sq){ctx.fillStyle="rgba(127,200,248,0.3)";ctx.fillRect(f*cs,r*cs,cs,cs);}
-      if(validTos.has(sq)&&dark){
+      if (sel===sq){ctx.fillStyle="rgba(127,200,248,0.3)";ctx.fillRect(f*cs,r*cs,cs,cs);}
+      if (validTos.has(sq)&&dark) {
         ctx.beginPath();ctx.arc(f*cs+cs/2,r*cs+cs/2,cs*0.12,0,Math.PI*2);
         ctx.fillStyle="rgba(127,200,248,0.7)";ctx.fill();
       }
     }
-    // pieces
-    for(let sq=0;sq<64;sq++){
+    for (let sq=0;sq<64;sq++) {
       const p=state.board[sq]; if(!p) continue;
       const r=flipped?7-Math.floor(sq/8):Math.floor(sq/8);
       const f=flipped?7-(sq%8):sq%8;
@@ -65,43 +65,49 @@ export default function Checkers() {
         ctx.fillText("♚",cx,cy+1);
       }
     }
-  },[vsAI,playerColor]);
+  }, []);
 
-  useEffect(()=>{ if(mode==="playing") draw(gs,selected,legalFrom); },[gs,selected,legalFrom,mode,draw]);
+  const canvasRef = useResponsiveCanvas(drawFn);
+  const redraw = useCallback(() => { const c=canvasRef.current; if(c) drawFn(c); }, [drawFn,canvasRef]);
+  useEffect(() => { redraw(); }, [gs, selected, legalFrom, mode, redraw]);
 
-  const startGame = useCallback(()=>{
+  const startGame = useCallback(() => {
     const s=CK.initial(); setGs(s); setSelected(null); setLegalFrom([]);
     setThinking(false); setResultRecorded(false); setShowResult(false);
     aiPending.current=false; setMode("playing");
-  },[]);
+  }, []);
 
-  const recordResult = useCallback((s:CK.CkState)=>{
+  const recordResult = useCallback((s:CK.CkState) => {
     if(resultRecorded||!vsAI) return; setResultRecorded(true);
-    if(s.status==="win_b"){ if(playerColor==="b") recordWin(); else recordLoss(); }
-    else if(s.status==="win_r"){ if(playerColor==="r") recordWin(); else recordLoss(); }
+    if(s.status==="win_b"){if(playerColor==="b") recordWin(); else recordLoss();}
+    else if(s.status==="win_r"){if(playerColor==="r") recordWin(); else recordLoss();}
     else recordDraw();
-  },[resultRecorded,vsAI,playerColor,recordWin,recordLoss,recordDraw]);
+  }, [resultRecorded,vsAI,playerColor,recordWin,recordLoss,recordDraw]);
 
-  const triggerAI = useCallback((s:CK.CkState)=>{
+  const triggerAI = useCallback((s:CK.CkState) => {
     if(aiPending.current) return; aiPending.current=true; setThinking(true);
     setTimeout(()=>{
       const m=CK.aiMove(s,DEPTHS[difficulty]); aiPending.current=false; setThinking(false);
-      if(m){ const next=CK.applyMove(s,m); setGs(next); if(next.status!=="playing"){recordResult(next);setShowResult(true);} }
+      if(m){const next=CK.applyMove(s,m); setGs(next); if(next.status!=="playing"){recordResult(next);setShowResult(true);}}
     },50);
-  },[difficulty,recordResult]);
+  }, [difficulty,recordResult]);
 
-  useEffect(()=>{
+  useEffect(() => {
     if(mode!=="playing") return;
     if(gs.status!=="playing"){if(!resultRecorded){recordResult(gs);setShowResult(true);}return;}
     if(vsAI&&gs.turn!==playerColor&&!thinking&&!aiPending.current) triggerAI(gs);
-  },[gs,mode]);
+  }, [gs, mode]);
 
-  const handleClick = (x:number,y:number)=>{
+  const handleClick = (x:number,y:number) => {
     if(mode!=="playing") return;
     if(gs.status!=="playing"){setShowResult(true);return;}
     if(thinking||(vsAI&&gs.turn!==playerColor)) return;
+    const canvas=canvasRef.current; if(!canvas) return;
+    const cs=Math.floor(Math.min(canvas.width,canvas.height)/8);
     const flipped=vsAI&&playerColor==="b";
-    const sq=sqForXY(x,y,flipped); if(sq<0) return;
+    const col=Math.floor(x/cs); const row=Math.floor(y/cs);
+    if(col<0||col>7||row<0||row>7) return;
+    const sq=flipped?(7-row)*8+(7-col):row*8+col;
     if(selected!==null){
       const moves=legalFrom.filter(m=>m.path[m.path.length-1]===sq);
       if(moves.length){
@@ -116,22 +122,18 @@ export default function Checkers() {
     else{setSelected(null);setLegalFrom([]);}
   };
 
-  const clickCanvas=(e:React.MouseEvent<HTMLCanvasElement>)=>{
-    const r=canvasRef.current!.getBoundingClientRect();
-    handleClick((e.clientX-r.left)*canvasRef.current!.width/r.width,(e.clientY-r.top)*canvasRef.current!.height/r.height);
+  const getXY = (canvas:HTMLCanvasElement,cx:number,cy:number) => {
+    const r=canvas.getBoundingClientRect();
+    return [(cx-r.left)*canvas.width/r.width,(cy-r.top)*canvas.height/r.height] as const;
   };
-  const touchCanvas=(e:React.TouchEvent<HTMLCanvasElement>)=>{
-    e.preventDefault(); const t=e.changedTouches[0];
-    const r=canvasRef.current!.getBoundingClientRect();
-    handleClick((t.clientX-r.left)*canvasRef.current!.width/r.width,(t.clientY-r.top)*canvasRef.current!.height/r.height);
-  };
+  const clickC = (e:React.MouseEvent<HTMLCanvasElement>) => { const[x,y]=getXY(canvasRef.current!,e.clientX,e.clientY); handleClick(x,y); };
+  const touchC = (e:React.TouchEvent<HTMLCanvasElement>) => { e.preventDefault(); const t=e.changedTouches[0]; const[x,y]=getXY(canvasRef.current!,t.clientX,t.clientY); handleClick(x,y); };
 
-  const statusText=()=>{
+  const statusText = () => {
     if(thinking) return "AI thinking…";
     if(gs.status==="win_r") return "Red wins!";
     if(gs.status==="win_b") return "White wins!";
-    const mine=vsAI&&gs.turn===playerColor;
-    return mine?"Your turn":`${gs.turn==="r"?"Red":"White"} to move`;
+    return vsAI&&gs.turn===playerColor?"Your turn":`${gs.turn==="r"?"Red":"White"} to move`;
   };
 
   return (
@@ -145,10 +147,9 @@ export default function Checkers() {
         <button className="hud-btn" onClick={()=>setMode("menu")}>Menu</button>
       </div>
       <div className="board-area">
-        <canvas ref={canvasRef} width={400} height={400} style={{maxWidth:"100%",maxHeight:"100%",cursor:"pointer",borderRadius:4}} onClick={clickCanvas} onTouchEnd={touchCanvas}/>
+        <canvas ref={canvasRef} style={{width:"100%",height:"100%",cursor:"pointer",borderRadius:4}} onClick={clickC} onTouchEnd={touchC}/>
       </div>
       <div className="status-bar"><span>⬤ Checkers</span>{vsAI&&<span>AI: {["Easy","Medium","Hard"][difficulty]}</span>}</div>
-
       {(mode==="menu"||mode==="color")&&(
         <div className="modal-overlay">
           <div className="modal">

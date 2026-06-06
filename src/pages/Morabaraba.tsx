@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
 import * as MB from "@/engines/morabaraba";
 import { useStats } from "@/hooks/useStats";
+import { useResponsiveCanvas } from "@/hooks/useCanvas";
 
 type Mode = "menu"|"variant"|"color"|"playing";
 const DEPTHS = [2,4,6];
@@ -19,15 +20,18 @@ export default function Morabaraba() {
   const [thinking, setThinking] = useState(false);
   const [resultRecorded, setResultRecorded] = useState(false);
   const [showResult, setShowResult] = useState(false);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const aiPending = useRef(false);
 
-  const draw = useCallback((state:MB.MState, sel:number|null)=>{
-    const canvas=canvasRef.current; if(!canvas) return;
-    const ctx=canvas.getContext("2d")!;
-    const W=canvas.width; const cs=W/7;
-    ctx.fillStyle="#0e0e0e"; ctx.fillRect(0,0,W,W);
-    // draw mills highlight
+  const modeRef = useRef(mode); const gsRef = useRef(gs); const selRef = useRef(selected);
+  modeRef.current=mode; gsRef.current=gs; selRef.current=selected;
+
+  const drawFn = useCallback((canvas: HTMLCanvasElement) => {
+    if (modeRef.current !== "playing") return;
+    const state = gsRef.current; const sel = selRef.current;
+    const ctx = canvas.getContext("2d")!;
+    const W = Math.min(canvas.width, canvas.height);
+    const cs = W/7;
+    ctx.fillStyle="#0e0e0e"; ctx.fillRect(0,0,canvas.width,canvas.height);
     for(const mill of MB.MILLS){
       const allSame=mill.every(n=>state.board[n]&&state.board[n]===state.board[mill[0]]);
       if(allSame&&state.board[mill[0]]){
@@ -41,7 +45,6 @@ export default function Morabaraba() {
         ctx.stroke();
       }
     }
-    // draw edges
     ctx.strokeStyle="#2e2e2e"; ctx.lineWidth=2;
     const drawn=new Set<string>();
     for(let i=0;i<24;i++){
@@ -52,7 +55,6 @@ export default function Morabaraba() {
         ctx.beginPath(); ctx.moveTo(f1*cs,r1*cs); ctx.lineTo(f2*cs,r2*cs); ctx.stroke();
       }
     }
-    // valid moves
     const validTargets=new Set<number>();
     if(state.phase==="place"&&!state.pendingRemove){
       state.board.forEach((v,i)=>{ if(!v) validTargets.add(i); });
@@ -61,7 +63,6 @@ export default function Morabaraba() {
       if(canFly) state.board.forEach((v,i)=>{ if(!v) validTargets.add(i); });
       else MB.ADJACENCY[sel].forEach(j=>{ if(!state.board[j]) validTargets.add(j); });
     }
-    // remove candidates
     const removeCandidates=new Set<number>();
     if(state.pendingRemove){
       const opp:MB.MColor=state.turn==="w"?"b":"w";
@@ -72,7 +73,6 @@ export default function Morabaraba() {
         if(!inM||allInMill) removeCandidates.add(n);
       });
     }
-    // nodes
     for(let i=0;i<24;i++){
       const[r,f]=MB.NODE_POS[i]; const x=f*cs; const y=r*cs; const rad=cs*0.18;
       ctx.shadowColor="rgba(0,0,0,0.7)"; ctx.shadowBlur=5;
@@ -81,7 +81,7 @@ export default function Morabaraba() {
         ctx.beginPath(); ctx.arc(x,y,rad*2,0,Math.PI*2);
         ctx.fillStyle=p==="w"?"#f5f5f5":"#bf360c"; ctx.fill();
         ctx.strokeStyle=p==="w"?"#9e9e9e":"#7f2600"; ctx.lineWidth=2; ctx.stroke();
-        if(sel===i&&!state.pendingRemove){ ctx.strokeStyle="var(--accent)"; ctx.lineWidth=3; ctx.stroke(); }
+        if(sel===i&&!state.pendingRemove){ ctx.strokeStyle="#7fc8f8"; ctx.lineWidth=3; ctx.stroke(); }
         if(removeCandidates.has(i)){ ctx.strokeStyle="#ff1744"; ctx.lineWidth=3; ctx.stroke(); }
       } else {
         ctx.beginPath(); ctx.arc(x,y,rad,0,Math.PI*2);
@@ -90,52 +90,55 @@ export default function Morabaraba() {
       }
       ctx.shadowBlur=0;
     }
-  },[]);
+  }, []);
 
-  useEffect(()=>{ if(mode==="playing") draw(gs,selected); },[gs,selected,mode,draw]);
+  const canvasRef = useResponsiveCanvas(drawFn);
+  const redraw = useCallback(() => { const c=canvasRef.current; if(c) drawFn(c); }, [drawFn,canvasRef]);
+  useEffect(() => { redraw(); }, [gs, selected, mode, redraw]);
 
-  const startGame=useCallback(()=>{
+  const startGame = useCallback(() => {
     const s=MB.initial(pieceCnt); setGs(s); setSelected(null); setThinking(false);
     setResultRecorded(false); setShowResult(false); aiPending.current=false; setMode("playing");
-  },[pieceCnt]);
+  }, [pieceCnt]);
 
-  const recordResult=useCallback((s:MB.MState)=>{
+  const recordResult = useCallback((s:MB.MState) => {
     if(resultRecorded||!vsAI) return; setResultRecorded(true);
-    if(s.status==="win_w"){ if(playerColor==="w") recordWin(); else recordLoss(); }
-    else if(s.status==="win_b"){ if(playerColor==="b") recordWin(); else recordLoss(); }
+    if(s.status==="win_w"){if(playerColor==="w") recordWin(); else recordLoss();}
+    else if(s.status==="win_b"){if(playerColor==="b") recordWin(); else recordLoss();}
     else recordDraw();
-  },[resultRecorded,vsAI,playerColor,recordWin,recordLoss,recordDraw]);
+  }, [resultRecorded,vsAI,playerColor,recordWin,recordLoss,recordDraw]);
 
-  const triggerAI=useCallback((s:MB.MState)=>{
+  const triggerAI = useCallback((s:MB.MState) => {
     if(aiPending.current) return; aiPending.current=true; setThinking(true);
     setTimeout(()=>{
       const result=MB.aiMove(s,DEPTHS[difficulty]); aiPending.current=false; setThinking(false);
       if(!result) return;
       if(result.remove!=null){
-        const next=MB.applyRemove(s,result.remove); setGs(next); if(next.status!=="playing"){recordResult(next);setShowResult(true);}
+        const next=MB.applyRemove(s,result.remove); setGs(next);
+        if(next.status!=="playing"){recordResult(next);setShowResult(true);}
         else if(vsAI&&next.turn!==playerColor) triggerAI(next);
       } else {
-        let next=s.phase==="place"?MB.applyPlace(s,result.to):MB.applyMoveNode(s,result.from,result.to);
-        setGs(next); if(next.status!=="playing"){recordResult(next);setShowResult(true);}
+        const next=s.phase==="place"?MB.applyPlace(s,result.to):MB.applyMoveNode(s,result.from,result.to);
+        setGs(next);
+        if(next.status!=="playing"){recordResult(next);setShowResult(true);}
         else if(next.pendingRemove){ triggerAI(next); }
         else if(vsAI&&next.turn!==playerColor) triggerAI(next);
       }
     },50);
-  },[difficulty,vsAI,playerColor,recordResult]);
+  }, [difficulty,vsAI,playerColor,recordResult]);
 
-  useEffect(()=>{
+  useEffect(() => {
     if(mode!=="playing") return;
     if(gs.status!=="playing"){if(!resultRecorded){recordResult(gs);setShowResult(true);}return;}
     if(vsAI&&gs.turn!==playerColor&&!thinking&&!aiPending.current) triggerAI(gs);
-  },[gs,mode]);
+  }, [gs, mode]);
 
-  const handleClick=(x:number,y:number)=>{
+  const handleClick = (x:number,y:number) => {
     if(mode!=="playing") return;
     if(gs.status!=="playing"){setShowResult(true);return;}
     if(thinking||(vsAI&&gs.turn!==playerColor)) return;
     const canvas=canvasRef.current; if(!canvas) return;
-    const cs=canvas.width/7;
-    // find nearest node
+    const cs=Math.min(canvas.width,canvas.height)/7;
     let best=-1; let bestDist=Infinity;
     for(let i=0;i<24;i++){
       const[r,f]=MB.NODE_POS[i]; const nx=f*cs; const ny=r*cs;
@@ -145,7 +148,8 @@ export default function Morabaraba() {
     if(bestDist>cs*0.45) return;
     if(gs.pendingRemove){
       const next=MB.applyRemove(gs,best); if(next===gs) return;
-      setGs(next); if(next.status!=="playing"){recordResult(next);setShowResult(true);}
+      setGs(next);
+      if(next.status!=="playing"){recordResult(next);setShowResult(true);}
       else if(vsAI&&next.turn!==playerColor) triggerAI(next);
       return;
     }
@@ -156,7 +160,6 @@ export default function Morabaraba() {
       else if(vsAI&&next.turn!==playerColor&&!next.pendingRemove) triggerAI(next);
       return;
     }
-    // slide/fly
     if(selected===null){
       if(gs.board[best]===gs.turn) setSelected(best);
     } else {
@@ -169,8 +172,12 @@ export default function Morabaraba() {
     }
   };
 
-  const clickC=(e:React.MouseEvent<HTMLCanvasElement>)=>{ const r=canvasRef.current!.getBoundingClientRect(); handleClick((e.clientX-r.left)*canvasRef.current!.width/r.width,(e.clientY-r.top)*canvasRef.current!.height/r.height); };
-  const touchC=(e:React.TouchEvent<HTMLCanvasElement>)=>{ e.preventDefault(); const t=e.changedTouches[0]; const r=canvasRef.current!.getBoundingClientRect(); handleClick((t.clientX-r.left)*canvasRef.current!.width/r.width,(t.clientY-r.top)*canvasRef.current!.height/r.height); };
+  const getXY = (canvas:HTMLCanvasElement,cx:number,cy:number) => {
+    const r=canvas.getBoundingClientRect();
+    return [(cx-r.left)*canvas.width/r.width,(cy-r.top)*canvas.height/r.height] as const;
+  };
+  const clickC=(e:React.MouseEvent<HTMLCanvasElement>)=>{const[x,y]=getXY(canvasRef.current!,e.clientX,e.clientY);handleClick(x,y);};
+  const touchC=(e:React.TouchEvent<HTMLCanvasElement>)=>{e.preventDefault();const t=e.changedTouches[0];const[x,y]=getXY(canvasRef.current!,t.clientX,t.clientY);handleClick(x,y);};
 
   const wCnt=gs.board.filter(x=>x==="w").length;
   const bCnt=gs.board.filter(x=>x==="b").length;
@@ -179,7 +186,7 @@ export default function Morabaraba() {
   const statusText=()=>{
     if(thinking) return "AI thinking…";
     if(gs.pendingRemove&&gs.turn===playerColor) return "Tap opponent's piece to remove";
-    if(gs.phase==="place") return `Placing — ${gs.turn==="w"?"White":gs.turn==="b"?"Black":""}`;
+    if(gs.phase==="place") return `Placing — ${gs.turn==="w"?"White":"Black"}`;
     return vsAI&&gs.turn===playerColor?"Your turn":`${gs.turn==="w"?"White":"Black"} to move`;
   };
 
@@ -194,14 +201,13 @@ export default function Morabaraba() {
         <button className="hud-btn" onClick={()=>setMode("menu")}>Menu</button>
       </div>
       <div className="board-area">
-        <canvas ref={canvasRef} width={420} height={420} style={{maxWidth:"100%",maxHeight:"100%",cursor:"pointer"}} onClick={clickC} onTouchEnd={touchC}/>
+        <canvas ref={canvasRef} style={{width:"100%",height:"100%",cursor:"pointer"}} onClick={clickC} onTouchEnd={touchC}/>
       </div>
       <div className="status-bar">
         <span style={{color:"var(--text)"}}>⬜ {wCnt}{wp<pc?` (${pc-wp} left)`:""}</span>
         <span style={{color:"var(--muted)"}}>vs</span>
         <span style={{color:"#bf360c"}}>⬤ {bCnt}{bp<pc?` (${pc-bp} left)`:""}</span>
       </div>
-
       {(mode==="menu"||mode==="variant"||mode==="color")&&(
         <div className="modal-overlay">
           <div className="modal">
@@ -222,13 +228,13 @@ export default function Morabaraba() {
             {mode==="variant"&&<>
               <h2>Choose Variant</h2>
               {[["6 Cows","Simple",6],["9 Cows","Classic",9],["12 Cows","Morabaraba",12]].map(([name,sub,cnt])=>(
-                <button key={cnt} className={`modal-btn${pieceCnt===cnt?" active":""}`} onClick={()=>setPieceCnt(cnt as number)}>
+                <button key={String(cnt)} className={`modal-btn${pieceCnt===cnt?" active":""}`} onClick={()=>setPieceCnt(cnt as number)}>
                   <span style={{fontWeight:700}}>{name}</span> — <span style={{color:"var(--muted)"}}>{sub}</span>
                 </button>
               ))}
               {vsAI
-                ? <button className="modal-btn" style={{marginTop:8,background:"var(--accent)",color:"#000"}} onClick={()=>setMode("color")}>Continue →</button>
-                : <button className="modal-btn" style={{marginTop:8,background:"var(--accent)",color:"#000"}} onClick={()=>{setPlayerColor("w");startGame();}}>Start Game →</button>
+                ?<button className="modal-btn" style={{marginTop:8,background:"var(--accent)",color:"#000"}} onClick={()=>setMode("color")}>Continue →</button>
+                :<button className="modal-btn" style={{marginTop:8,background:"var(--accent)",color:"#000"}} onClick={()=>{setPlayerColor("w");startGame();}}>Start Game →</button>
               }
               <button className="modal-close" onClick={()=>setMode("menu")}>← Back</button>
             </>}
