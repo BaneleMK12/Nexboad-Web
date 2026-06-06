@@ -2,7 +2,12 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
 import * as TT from "@/engines/tictactoe";
 import { useStats } from "@/hooks/useStats";
-import { useResponsiveCanvas } from "@/hooks/useCanvas";
+
+// Android TicTacToe colors: bg=#121212, grid=#383838, X=#EF5350, O=#7FC8F8, win=#FFC107
+const GRID_COLOR = "#383838";
+const X_COLOR    = "#EF5350";
+const O_COLOR    = "#7FC8F8";
+const WIN_COLOR  = "#FFC107";
 
 type Mode = "menu"|"size"|"color"|"playing";
 
@@ -11,188 +16,233 @@ export default function TicTacToe() {
   const { recordWin, recordLoss, recordDraw } = useStats("tictactoe");
   const [mode, setMode] = useState<Mode>("menu");
   const [vsAI, setVsAI] = useState(true);
-  const [playerColor, setPlayerColor] = useState<TT.TColor>(1);
   const [boardSize, setBoardSize] = useState(3);
+  const [playerColor, setPlayerColor] = useState<TT.TColor>(1);
+  const [difficulty, setDifficulty] = useState(1);
   const [gs, setGs] = useState(TT.initial(3));
   const [thinking, setThinking] = useState(false);
-  const [resultRecorded, setResultRecorded] = useState(false);
   const [showResult, setShowResult] = useState(false);
-  const [scoreX, setScoreX] = useState(0);
-  const [scoreO, setScoreO] = useState(0);
-  const [scoreD, setScoreD] = useState(0);
-  const aiPending = useRef(false);
+  const [resultRecorded, setResultRecorded] = useState(false);
+  const [winProgress, setWinProgress] = useState(0);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const aiRef = useRef(false);
 
-  const modeRef = useRef(mode); const gsRef = useRef(gs);
-  modeRef.current = mode; gsRef.current = gs;
+  const CS = useCallback(()=>{
+    const el=canvasRef.current; if(!el) return 100;
+    return Math.floor(Math.min(el.width,el.height)/gs.size);
+  },[gs.size]);
 
-  const drawFn = useCallback((canvas: HTMLCanvasElement) => {
-    if (modeRef.current !== "playing") return;
-    const state = gsRef.current;
-    const ctx = canvas.getContext("2d")!;
-    const bs = state.size;
-    const cs = Math.floor(Math.min(canvas.width, canvas.height) / bs);
-    const w = cs*bs;
-    ctx.fillStyle="#121212"; ctx.fillRect(0,0,canvas.width,canvas.height);
-    const ox=(canvas.width-w)/2; const oy=(canvas.height-w)/2;
-    ctx.strokeStyle="#2a2a2a"; ctx.lineWidth=2;
-    for(let i=1;i<bs;i++){
-      ctx.beginPath();ctx.moveTo(ox+i*cs,oy);ctx.lineTo(ox+i*cs,oy+w);ctx.stroke();
-      ctx.beginPath();ctx.moveTo(ox,oy+i*cs);ctx.lineTo(ox+w,oy+i*cs);ctx.stroke();
-    }
-    if(state.winLine&&state.winLine.length>=2){
-      const first=state.winLine[0]; const last=state.winLine[state.winLine.length-1];
-      const r1=Math.floor(first/bs),f1=first%bs; const r2=Math.floor(last/bs),f2=last%bs;
-      ctx.strokeStyle="#fbbf24"; ctx.lineWidth=Math.max(4,cs*0.05); ctx.lineCap="round";
-      ctx.beginPath();
-      ctx.moveTo(ox+f1*cs+cs/2,oy+r1*cs+cs/2);
-      ctx.lineTo(ox+f2*cs+cs/2,oy+r2*cs+cs/2);
-      ctx.stroke(); ctx.lineCap="butt";
-    }
-    for(let s=0;s<bs*bs;s++){
-      const v=state.board[s]; if(!v) continue;
-      const r=Math.floor(s/bs),f=s%bs;
-      const cx=ox+f*cs+cs/2; const cy=oy+r*cs+cs/2; const r2=cs*0.3;
-      ctx.lineWidth=Math.max(3,cs*0.07); ctx.lineCap="round";
-      if(v===1){
-        ctx.strokeStyle=state.winLine?.includes(s)?"#fbbf24":"#ef5350";
-        ctx.beginPath();ctx.moveTo(cx-r2,cy-r2);ctx.lineTo(cx+r2,cy+r2);ctx.stroke();
-        ctx.beginPath();ctx.moveTo(cx+r2,cy-r2);ctx.lineTo(cx-r2,cy+r2);ctx.stroke();
-      } else {
-        ctx.strokeStyle=state.winLine?.includes(s)?"#fbbf24":"#7fc8f8";
-        ctx.beginPath();ctx.arc(cx,cy,r2,0,Math.PI*2);ctx.stroke();
-      }
-      ctx.lineCap="butt";
-    }
-  }, []);
-
-  const canvasRef = useResponsiveCanvas(drawFn);
-  const redraw = useCallback(() => { const c=canvasRef.current; if(c) drawFn(c); }, [drawFn,canvasRef]);
-  useEffect(() => { redraw(); }, [gs, mode, redraw]);
-
-  const startGame = useCallback(() => {
-    const s=TT.initial(boardSize); setGs(s); setThinking(false);
-    setResultRecorded(false); setShowResult(false); aiPending.current=false; setMode("playing");
-  }, [boardSize]);
-
-  const recordResult = useCallback((s:TT.TState) => {
-    if(resultRecorded||!vsAI) return; setResultRecorded(true);
-    if(s.status==="win_x"){
-      setScoreX(p=>p+1);
-      if(playerColor===1) recordWin(); else recordLoss();
-    } else if(s.status==="win_o"){
-      setScoreO(p=>p+1);
-      if(playerColor===2) recordWin(); else recordLoss();
-    } else {
-      setScoreD(p=>p+1); recordDraw();
-    }
-  }, [resultRecorded,vsAI,playerColor,recordWin,recordLoss,recordDraw]);
-
-  const triggerAI = useCallback((s:TT.TState) => {
-    if(aiPending.current) return; aiPending.current=true; setThinking(true);
-    setTimeout(()=>{
-      const m=TT.aiMove(s); aiPending.current=false; setThinking(false);
-      if(m!=null){ const next=TT.applyMove(s,m); setGs(next); if(next.status!=="playing"){recordResult(next);setTimeout(()=>setShowResult(true),600);} }
-    },30);
-  }, [recordResult]);
-
-  useEffect(() => {
-    if(mode!=="playing") return;
-    if(gs.status!=="playing"){if(!resultRecorded){recordResult(gs);setTimeout(()=>setShowResult(true),600);}return;}
-    if(vsAI&&gs.turn!==playerColor&&!thinking&&!aiPending.current) triggerAI(gs);
-  }, [gs, mode]);
-
-  const handleClick = (x:number,y:number) => {
-    if(mode!=="playing") return;
-    if(gs.status!=="playing"){setShowResult(true);return;}
-    if(thinking||(vsAI&&gs.turn!==playerColor)) return;
+  const draw = useCallback((state:TT.TState, wp:number)=>{
     const canvas=canvasRef.current; if(!canvas) return;
-    const bs=gs.size; const cs=Math.floor(Math.min(canvas.width,canvas.height)/bs);
-    const w=cs*bs; const ox=(canvas.width-w)/2; const oy=(canvas.height-w)/2;
-    const col=Math.floor((x-ox)/cs); const row=Math.floor((y-oy)/cs);
-    if(col<0||col>=bs||row<0||row>=bs) return;
-    const sq=row*bs+col;
+    const ctx=canvas.getContext("2d")!;
+    const n=state.size, cs=CS();
+    const totalSize=n*cs;
+    const ox=(canvas.width-totalSize)/2, oy=(canvas.height-totalSize)/2;
+    // background
+    ctx.fillStyle="#121212"; ctx.fillRect(0,0,canvas.width,canvas.height);
+    // grid lines — Android style: strokeCap round
+    ctx.strokeStyle=GRID_COLOR; ctx.lineCap="round";
+    ctx.lineWidth=Math.max(cs*0.022,2);
+    for(let i=1;i<n;i++){
+      ctx.beginPath(); ctx.moveTo(ox+i*cs,oy); ctx.lineTo(ox+i*cs,oy+totalSize); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(ox,oy+i*cs); ctx.lineTo(ox+totalSize,oy+i*cs); ctx.stroke();
+    }
+    // pieces
+    ctx.lineWidth=cs*0.085; ctx.lineCap="round";
+    for(let r=0;r<n;r++) for(let f=0;f<n;f++){
+      const c=state.board[r*n+f]; if(!c) continue;
+      const cx=ox+f*cs+cs/2, cy=oy+r*cs+cs/2;
+      const rad=cs*0.29;
+      if(c===1){
+        ctx.strokeStyle=X_COLOR;
+        ctx.beginPath(); ctx.moveTo(cx-rad,cy-rad); ctx.lineTo(cx+rad,cy+rad); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(cx+rad,cy-rad); ctx.lineTo(cx-rad,cy+rad); ctx.stroke();
+      } else {
+        ctx.strokeStyle=O_COLOR;
+        ctx.beginPath(); ctx.arc(cx,cy,rad,0,Math.PI*2); ctx.stroke();
+      }
+    }
+    // win line
+    const wl=state.winLine;
+    if(wl&&wl.length>=2&&wp>0){
+      const first=wl[0], last=wl[wl.length-1];
+      const r0=Math.floor(first/n), f0=first%n;
+      const r1=Math.floor(last/n),  f1=last%n;
+      const sx=ox+f0*cs+cs/2, sy=oy+r0*cs+cs/2;
+      const ex=ox+f1*cs+cs/2, ey=oy+r1*cs+cs/2;
+      const dx=ex-sx, dy=ey-sy;
+      ctx.strokeStyle=`rgba(255,193,7,${wp*0.86})`;
+      ctx.lineWidth=cs*0.055; ctx.lineCap="round";
+      ctx.beginPath(); ctx.moveTo(sx,sy); ctx.lineTo(sx+dx*wp,sy+dy*wp); ctx.stroke();
+    }
+  },[CS]);
+
+  useEffect(()=>{ if(mode==="playing") draw(gs,winProgress); },[gs,winProgress,mode,draw]);
+
+  const startGame=useCallback((size:number,pColor:TT.TColor)=>{
+    const s=TT.initial(size); setGs(s); setWinProgress(0);
+    setThinking(false); setResultRecorded(false); setShowResult(false);
+    aiRef.current=false; setMode("playing");
+    if(vsAI&&s.turn!==pColor) {
+      setTimeout(()=>triggerAI(s,pColor,difficulty),100);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[vsAI,difficulty]);
+
+  const recordResult=useCallback((s:TT.TState)=>{
+    if(resultRecorded||!vsAI) return; setResultRecorded(true);
+    if(s.status==="draw") recordDraw();
+    else if((s.status==="win_x"&&playerColor===1)||(s.status==="win_o"&&playerColor===2)) recordWin();
+    else recordLoss();
+  },[resultRecorded,vsAI,playerColor,recordWin,recordLoss,recordDraw]);
+
+  const triggerAI=useCallback((s:TT.TState,pCol:TT.TColor,diff:number)=>{
+    if(aiRef.current) return;
+    aiRef.current=true; setThinking(true);
+    const depths=[[3,5,9],[3,5,7],[3,5,6],[3,5,6]];
+    const di=Math.min(s.size-3,3);
+    const depth=depths[di][diff];
+    setTimeout(()=>{
+      const m=TT.aiMove(s,depth);
+      aiRef.current=false; setThinking(false);
+      if(m!==null){
+        const next=TT.applyMove(s,m); setGs(next);
+        if(next.status!=="playing"){
+          recordResult(next);
+          if(next.winLine) {
+            let p=0; const iv=setInterval(()=>{ p+=0.05; setWinProgress(Math.min(p,1)); if(p>=1)clearInterval(iv); },16);
+          }
+          setTimeout(()=>setShowResult(true),1000);
+        }
+      }
+    },50);
+  },[recordResult]);
+
+  useEffect(()=>{
+    if(mode!=="playing") return;
+    if(gs.status!=="playing"){
+      if(!resultRecorded){ recordResult(gs); }
+      return;
+    }
+    if(vsAI&&gs.turn!==playerColor&&!aiRef.current) triggerAI(gs,playerColor,difficulty);
+  },[gs,mode]);
+
+  const handleClick=useCallback((x:number,y:number)=>{
+    if(mode!=="playing"||thinking||(vsAI&&gs.turn!==playerColor)) return;
+    if(gs.status!=="playing"){ setShowResult(true); return; }
+    const cs=CS(); const n=gs.size;
+    const totalSize=n*cs;
+    const canvas=canvasRef.current!;
+    const ox=(canvas.width-totalSize)/2, oy=(canvas.height-totalSize)/2;
+    const f=Math.floor((x-ox)/cs), r=Math.floor((y-oy)/cs);
+    if(f<0||f>=n||r<0||r>=n) return;
+    const sq=r*n+f;
     if(gs.board[sq]) return;
     const next=TT.applyMove(gs,sq); setGs(next);
-    if(next.status!=="playing"){recordResult(next);setTimeout(()=>setShowResult(true),700);}
-    else if(vsAI&&next.turn!==playerColor) triggerAI(next);
-  };
+    if(next.status!=="playing"){
+      recordResult(next);
+      if(next.winLine){
+        let p=0; const iv=setInterval(()=>{ p+=0.05; setWinProgress(Math.min(p,1)); if(p>=1)clearInterval(iv); },16);
+      }
+      setTimeout(()=>setShowResult(true),1000);
+    } else if(vsAI&&next.turn!==playerColor) triggerAI(next,playerColor,difficulty);
+  },[mode,gs,vsAI,playerColor,thinking,CS,recordResult,triggerAI,difficulty]);
 
-  const getXY = (canvas:HTMLCanvasElement,cx:number,cy:number) => {
-    const r=canvas.getBoundingClientRect();
-    return [(cx-r.left)*canvas.width/r.width,(cy-r.top)*canvas.height/r.height] as const;
+  const canvasClick=(e:React.MouseEvent<HTMLCanvasElement>)=>{
+    const r=canvasRef.current!.getBoundingClientRect();
+    handleClick((e.clientX-r.left)*canvasRef.current!.width/r.width,(e.clientY-r.top)*canvasRef.current!.height/r.height);
   };
-  const clickC=(e:React.MouseEvent<HTMLCanvasElement>)=>{const[x,y]=getXY(canvasRef.current!,e.clientX,e.clientY);handleClick(x,y);};
-  const touchC=(e:React.TouchEvent<HTMLCanvasElement>)=>{e.preventDefault();const t=e.changedTouches[0];const[x,y]=getXY(canvasRef.current!,t.clientX,t.clientY);handleClick(x,y);};
+  const canvasTouch=(e:React.TouchEvent<HTMLCanvasElement>)=>{
+    e.preventDefault(); const t=e.changedTouches[0];
+    const r=canvasRef.current!.getBoundingClientRect();
+    handleClick((t.clientX-r.left)*canvasRef.current!.width/r.width,(t.clientY-r.top)*canvasRef.current!.height/r.height);
+  };
 
   const statusText=()=>{
     if(thinking) return "AI thinking…";
-    if(gs.status==="win_x") return "X wins!";
-    if(gs.status==="win_o") return "O wins!";
-    if(gs.status==="draw") return "It's a draw!";
-    return vsAI&&gs.turn===playerColor?"Your turn":`${gs.turn===1?"X":"O"}'s turn`;
+    if(gs.status==="win_x") return vsAI?(playerColor===1?"You win!":"AI wins!"):"X wins!";
+    if(gs.status==="win_o") return vsAI?(playerColor===2?"You win!":"AI wins!"):"O wins!";
+    if(gs.status==="draw") return "Draw!";
+    const mine=vsAI&&gs.turn===playerColor;
+    return mine?"Your turn":`${gs.turn===1?"X":"O"}'s turn`;
+  };
+  const winner=()=>{
+    if(gs.status==="win_x") return vsAI?(playerColor===1?"You win! 🎉":"You lose!"):"X wins!";
+    if(gs.status==="win_o") return vsAI?(playerColor===2?"You win! 🎉":"You lose!"):"O wins!";
+    return "Draw!";
   };
 
-  const SIZE_OPTS=[3,4,5,6,7];
+  const SIZE_OPTS:[number,string][]=[
+    [3,"3×3 — Classic (3 in a row)"],
+    [4,"4×4 — Medium (4 in a row)"],
+    [5,"5×5 — Large (4 in a row)"],
+    [6,"6×6 — X-Large (5 in a row)"],
+  ];
 
   return (
     <div className="game-wrap">
       <div className="game-hud">
         <button className="hud-btn" onClick={()=>go("/")}>← Back</button>
         <div style={{textAlign:"center"}}>
-          <div className="turn-label" style={{color:gs.turn===1?"#ef5350":"#7fc8f8"}}>{statusText()}</div>
+          <div className="turn-label" style={{color:gs.turn===1?X_COLOR:O_COLOR}}>{statusText()}</div>
           {thinking&&<div className="thinking">● thinking</div>}
         </div>
         <button className="hud-btn" onClick={()=>setMode("menu")}>Menu</button>
       </div>
       <div className="board-area">
-        <canvas ref={canvasRef} style={{width:"100%",height:"100%",cursor:"pointer"}} onClick={clickC} onTouchEnd={touchC}/>
+        <canvas ref={canvasRef} width={400} height={400}
+          style={{maxWidth:"100%",maxHeight:"100%",cursor:"pointer"}}
+          onClick={canvasClick} onTouchEnd={canvasTouch}/>
       </div>
       <div className="status-bar">
-        <span style={{color:"#ef5350"}}>X {scoreX}</span>
-        <span style={{color:"var(--muted)"}}>Draw {scoreD}</span>
-        <span style={{color:"#7fc8f8"}}>O {scoreO}</span>
+        <span style={{color:X_COLOR}}>✕ X</span>
+        <span>Tic-Tac-Toe {gs.size}×{gs.size}</span>
+        <span style={{color:O_COLOR}}>○ O</span>
       </div>
-      {(mode==="menu"||mode==="size"||mode==="color")&&(
-        <div className="modal-overlay">
-          <div className="modal">
-            {mode==="menu"&&<>
-              <h2>✕ Tic-Tac-Toe</h2>
-              <button className="modal-btn" onClick={()=>{setVsAI(true);setMode("size");}}>vs AI (Always Hard)</button>
-              <button className="modal-btn" onClick={()=>{setVsAI(false);setMode("size");}}>2 Players</button>
-              <button className="modal-close" onClick={()=>go("/")}>Main Menu</button>
-            </>}
-            {mode==="size"&&<>
-              <h2>Board Size</h2>
-              {SIZE_OPTS.map(sz=>(
-                <button key={sz} className={`modal-btn${boardSize===sz?" active":""}`} onClick={()=>setBoardSize(sz)}>
-                  {sz}×{sz} — {TT.winLenFor(sz)} in a row
-                </button>
+      {mode==="menu"&&(
+        <div className="modal-overlay"><div className="modal">
+          <h2>✕○ Tic-Tac-Toe</h2>
+          <button className="modal-btn" onClick={()=>{setVsAI(true);setMode("size");}}>vs AI</button>
+          <button className="modal-btn" onClick={()=>{setVsAI(false);setMode("size");}}>2 Players</button>
+          <div style={{marginTop:12,marginBottom:8}}>
+            <div style={{fontSize:".75rem",color:"var(--muted)",marginBottom:6}}>AI Difficulty</div>
+            <div style={{display:"flex",gap:8}}>
+              {["Easy","Medium","Hard"].map((l,i)=>(
+                <button key={l} className={`modal-btn${difficulty===i?" active":""}`} style={{flex:1,padding:"8px"}} onClick={()=>setDifficulty(i)}>{l}</button>
               ))}
-              {vsAI
-                ?<button className="modal-btn" style={{marginTop:8,background:"var(--accent)",color:"#000"}} onClick={()=>setMode("color")}>Continue →</button>
-                :<button className="modal-btn" style={{marginTop:8,background:"var(--accent)",color:"#000"}} onClick={()=>{setPlayerColor(1);startGame();}}>Start Game →</button>
-              }
-              <button className="modal-close" onClick={()=>setMode("menu")}>← Back</button>
-            </>}
-            {mode==="color"&&<>
-              <h2>Play as</h2>
-              <button className="modal-btn" onClick={()=>{setPlayerColor(1);startGame();}}>✕ X (goes first)</button>
-              <button className="modal-btn" onClick={()=>{setPlayerColor(2);startGame();}}>◯ O (goes second)</button>
-              <button className="modal-close" onClick={()=>setMode("size")}>← Back</button>
-            </>}
+            </div>
           </div>
-        </div>
+          <button className="modal-close" onClick={()=>go("/")}>Main Menu</button>
+        </div></div>
+      )}
+      {mode==="size"&&(
+        <div className="modal-overlay"><div className="modal">
+          <h2>Board Size</h2>
+          {SIZE_OPTS.map(([sz,label])=>(
+            <button key={sz} className={`modal-btn${boardSize===sz?" active":""}`}
+              onClick={()=>{ setBoardSize(sz); if(vsAI) setMode("color"); else { setPlayerColor(1); startGame(sz,1); } }}>
+              {label}
+            </button>
+          ))}
+          <button className="modal-close" onClick={()=>setMode("menu")}>← Back</button>
+        </div></div>
+      )}
+      {mode==="color"&&(
+        <div className="modal-overlay"><div className="modal">
+          <h2>Play as</h2>
+          <button className="modal-btn" style={{color:X_COLOR}} onClick={()=>{ setPlayerColor(1); startGame(boardSize,1); }}>✕ X (goes first)</button>
+          <button className="modal-btn" style={{color:O_COLOR}} onClick={()=>{ setPlayerColor(2); startGame(boardSize,2); }}>○ O (goes second)</button>
+          <button className="modal-close" onClick={()=>setMode("size")}>← Back</button>
+        </div></div>
       )}
       {showResult&&(
-        <div className="modal-overlay">
-          <div className="modal">
-            <h2>Game Over</h2>
-            <p style={{color:"var(--muted)",marginBottom:16,textAlign:"center"}}>{statusText()}</p>
-            <button className="modal-btn" onClick={()=>{setShowResult(false);startGame();}}>Play Again</button>
-            <button className="modal-btn" onClick={()=>{setShowResult(false);setMode("menu");}}>Change Settings</button>
-            <button className="modal-close" onClick={()=>go("/")}>Main Menu</button>
-          </div>
-        </div>
+        <div className="modal-overlay"><div className="modal">
+          <h2>Game Over</h2>
+          <p style={{color:"var(--muted)",marginBottom:16,textAlign:"center"}}>{winner()}</p>
+          <button className="modal-btn" onClick={()=>{setShowResult(false);setWinProgress(0);startGame(boardSize,playerColor);}}>Play Again</button>
+          <button className="modal-btn" onClick={()=>{setShowResult(false);setWinProgress(0);setMode("menu");}}>Change Mode</button>
+          <button className="modal-close" onClick={()=>go("/")}>Main Menu</button>
+        </div></div>
       )}
     </div>
   );
