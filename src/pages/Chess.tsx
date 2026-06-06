@@ -6,7 +6,6 @@ import { useStats } from "@/hooks/useStats";
 // Android "Classic" theme: light=#F0D9B5 dark=#B58863 accent=#7FC8F8
 const LIGHT = "#F0D9B5";
 const DARK  = "#B58863";
-const ACCENT = "#7FC8F8";
 
 const SYMBOLS: Record<string,string> = {
   wK:"♔",wQ:"♕",wR:"♖",wB:"♗",wN:"♘",wP:"♙",
@@ -18,7 +17,7 @@ type Mode = "menu"|"color"|"playing";
 
 export default function Chess() {
   const [,go] = useLocation();
-  const { stats, recordWin, recordLoss, recordDraw } = useStats("chess");
+  const { recordWin, recordLoss, recordDraw } = useStats("chess");
   const [mode, setMode] = useState<Mode>("menu");
   const [vsAI, setVsAI] = useState(true);
   const [playerColor, setPlayerColor] = useState<CE.Color>("w");
@@ -38,11 +37,24 @@ export default function Chess() {
     return Math.floor(Math.min(el.width, el.height) / 8);
   }, []);
 
+  // Engine: rank 0 = white back rank (a1-h1 = bottom when white is at bottom)
+  // Display: canvas row 0 = top of screen
+  // Normal view (white at bottom): screenRow = 7 - engineRow
+  // Flipped view (black at bottom): screenRow = engineRow
+  const toScreen = useCallback((engineRow:number, engineCol:number, flipped:boolean) => {
+    const r = flipped ? engineRow : 7 - engineRow;
+    const f = flipped ? 7 - engineCol : engineCol;
+    return [r, f];
+  }, []);
+
   const squareForXY = useCallback((x:number,y:number,flipped:boolean) => {
     const cs = cellSize();
-    const col = Math.floor(x/cs); const row = Math.floor(y/cs);
-    if (col<0||col>7||row<0||row>7) return -1;
-    return flipped ? (7-row)*8+(7-col) : row*8+col;
+    const screenCol = Math.floor(x/cs); const screenRow = Math.floor(y/cs);
+    if (screenCol<0||screenCol>7||screenRow<0||screenRow>7) return -1;
+    // Invert toScreen: engineRow = flipped?screenRow:7-screenRow, engineCol = flipped?7-screenCol:screenCol
+    const engineRow = flipped ? screenRow : 7 - screenRow;
+    const engineCol = flipped ? 7 - screenCol : screenCol;
+    return engineRow*8+engineCol;
   }, [cellSize]);
 
   const draw = useCallback((state:CE.CState, sel:number|null, lm:CE.CMove[]) => {
@@ -51,36 +63,32 @@ export default function Chess() {
     const cs = cellSize(); const flipped = vsAI && playerColor==="b";
     // background
     ctx.fillStyle = "#121212"; ctx.fillRect(0,0,canvas.width,canvas.height);
-    // board squares
+    // board squares — screen r=0 is top, so for white-at-bottom: screen r=0 = rank 8 (black side)
     for (let r=0;r<8;r++) for (let f=0;f<8;f++) {
-      const sq = flipped?(7-r)*8+(7-f):r*8+f;
-      const light = (r+f)%2===0;
+      const [er, ef] = [flipped?r:7-r, flipped?7-f:f]; // engine row/col for this screen cell
+      const light = (er+ef)%2===0;
       ctx.fillStyle = light ? LIGHT : DARK;
       ctx.fillRect(f*cs, r*cs, cs, cs);
     }
     // last move highlight (gold)
     if (state.lastFrom>=0) {
-      const rf = flipped?7-Math.floor(state.lastFrom/8):Math.floor(state.lastFrom/8);
-      const ff = flipped?7-(state.lastFrom%8):state.lastFrom%8;
-      ctx.fillStyle = "rgba(255,215,0,0.35)"; ctx.fillRect(ff*cs,rf*cs,cs,cs);
+      const [sr,sf] = toScreen(Math.floor(state.lastFrom/8), state.lastFrom%8, flipped);
+      ctx.fillStyle = "rgba(255,215,0,0.35)"; ctx.fillRect(sf*cs,sr*cs,cs,cs);
     }
     if (state.lastTo>=0) {
-      const rt = flipped?7-Math.floor(state.lastTo/8):Math.floor(state.lastTo/8);
-      const ft = flipped?7-(state.lastTo%8):state.lastTo%8;
-      ctx.fillStyle = "rgba(255,215,0,0.35)"; ctx.fillRect(ft*cs,rt*cs,cs,cs);
+      const [sr,sf] = toScreen(Math.floor(state.lastTo/8), state.lastTo%8, flipped);
+      ctx.fillStyle = "rgba(255,215,0,0.35)"; ctx.fillRect(sf*cs,sr*cs,cs,cs);
     }
     // selected highlight (blue)
     if (sel!==null) {
-      const rs = flipped?7-Math.floor(sel/8):Math.floor(sel/8);
-      const fs = flipped?7-(sel%8):sel%8;
-      ctx.fillStyle = "rgba(127,200,248,0.6)"; ctx.fillRect(fs*cs,rs*cs,cs,cs);
+      const [sr,sf] = toScreen(Math.floor(sel/8), sel%8, flipped);
+      ctx.fillStyle = "rgba(127,200,248,0.6)"; ctx.fillRect(sf*cs,sr*cs,cs,cs);
     }
     // legal move dots/rings
     for (const m of lm) {
       const to = m.to;
-      const r = flipped?7-Math.floor(to/8):Math.floor(to/8);
-      const f = flipped?7-(to%8):to%8;
-      const cx = f*cs+cs/2; const cy = r*cs+cs/2;
+      const [sr,sf] = toScreen(Math.floor(to/8), to%8, flipped);
+      const cx = sf*cs+cs/2; const cy = sr*cs+cs/2;
       const hasPiece = state.board[to];
       if (hasPiece) {
         ctx.beginPath(); ctx.arc(cx,cy,cs*0.44,0,Math.PI*2);
@@ -95,9 +103,8 @@ export default function Chess() {
       for (let s=0;s<64;s++) {
         const p=state.board[s];
         if (p&&p.t==="K"&&p.c===state.turn) {
-          const r=flipped?7-Math.floor(s/8):Math.floor(s/8);
-          const f=flipped?7-(s%8):s%8;
-          ctx.fillStyle="rgba(255,50,50,0.45)"; ctx.fillRect(f*cs,r*cs,cs,cs);
+          const [sr,sf] = toScreen(Math.floor(s/8), s%8, flipped);
+          ctx.fillStyle="rgba(255,50,50,0.45)"; ctx.fillRect(sf*cs,sr*cs,cs,cs);
         }
       }
     }
@@ -105,8 +112,8 @@ export default function Chess() {
     ctx.textAlign="center"; ctx.textBaseline="middle";
     for (let sq=0;sq<64;sq++) {
       const p=state.board[sq]; if (!p) continue;
-      const r=flipped?7-Math.floor(sq/8):Math.floor(sq/8);
-      const f=flipped?7-(sq%8):sq%8;
+      const [sr,sf] = toScreen(Math.floor(sq/8), sq%8, flipped);
+      const r=sr, f=sf;
       const cx=f*cs+cs/2; const cy=r*cs+cs/2;
       const sz = Math.floor(cs*0.62);
       ctx.font = `${sz}px serif`;
@@ -129,7 +136,7 @@ export default function Chess() {
       ctx.textAlign="right"; ctx.textBaseline="bottom";
       ctx.fillText(files[i], (i+1)*cs-2, 8*cs-2);
     }
-  }, [vsAI, playerColor, cellSize]);
+  }, [vsAI, playerColor, cellSize, toScreen]);
 
   useEffect(() => { if (mode==="playing") draw(gameState, selected, legalFrom); }, [gameState, selected, legalFrom, mode, draw]);
 
